@@ -271,7 +271,7 @@ def plot_interactive(dfs, landscape=True):
     def next_(event):
         if _int_help.has_next():
             index = _int_help.get_next()
-            plot_event(dfs[index].CHAMBER, dfs[index].CHAN, None)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, None)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -284,7 +284,7 @@ def plot_interactive(dfs, landscape=True):
     def previous(event):
         if _int_help.has_prev():
             index = _int_help.get_prev()
-            plot_event(dfs[index].CHAMBER, dfs[index].CHAN, None)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, None)
             _axes.set_title(_int_help.get_title())
             plt.draw()
             plt.draw()
@@ -303,7 +303,7 @@ def plot_interactive(dfs, landscape=True):
 
     _int_help.load_data(dfs)
     _axes.set_title(_int_help.get_title())
-    plot_event(dfs[0].CHAMBER, dfs[0].CHAN, None)
+    plot_event(dfs[0].CHAMBER, dfs[0].CELL, None)
 
     if landscape:
         axprev = _figure.add_axes([0.7, 0.75, 0.1, 0.075])

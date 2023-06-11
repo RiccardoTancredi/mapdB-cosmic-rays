@@ -1,5 +1,6 @@
 dataset/
 *credentials.json
+ema/*.pdf
 
 
 # Byte-compiled / optimized / DLL files
