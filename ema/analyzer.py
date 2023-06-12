@@ -25,12 +25,14 @@ def load_dataframe(filename):
     return df
 
 
-MIN_DIFFERENT_LAYERS_HIT = 2
+MIN_UNIQUE_LAYERS_HIT = 2
+MAX_HITS_PER_CHAMBER = 12
+MIN_HITS_PER_CHAMBER = MIN_UNIQUE_LAYERS_HIT
+MAX_HITS_PER_LAYER = 3
+MIN_GOOD_CHAMBERS = 2
 
 
 def manipulate_dataframe(df):
-
-    print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
 
     # we eliminate all hits on chamber 1
     df = df[~((df.FPGA == 0) & (df.CHANNEL >= 64) & (df.CHANNEL <= 127))]
@@ -56,22 +58,55 @@ def manipulate_dataframe(df):
 
     df["CHAMBER"] = np.round(df.FPGA * 2 + df.CHANNEL // 64)
     df["CELL"] = (df.CHANNEL - (df.CHAMBER % 2) * 64)
-    df["LAYER"] = df.CELL // 16
+    df["LAYER"] = df.CELL % 4
 
-    # We remove the one who have less than MIN_DIFFERENT_LAYERS_HIT * 3
-    # equivalent to SQL 'HAVING COUNT(X) >= ... '
-    df = df.groupby(["ORBIT"]).filter(lambda x: len(x) >= MIN_DIFFERENT_LAYERS_HIT * 2)
+    # time correction
+    df["T0"] = df.T0 - time_offset_by_chamber[df.CHAMBER]
+    # We calculate the distance, and then convert it from um to mm
+    df["DISTANCE"] = (df.TIME - df.T0) * 53.8 / 1000
 
-    # Here we keep only the chambers with at least 'MIN_DIFFERENT_LAYERS_HIT' different layers hit
-    df = df.groupby(["ORBIT", "CHAMBER"]).filter(lambda x: len(x.LAYER.value_counts()) >= MIN_DIFFERENT_LAYERS_HIT)
+    hits_before = len(df)
+    df = df[(df.DISTANCE >= 0) & (df.DISTANCE <= 21)]
+    print(f"Sono stati rimossi {hits_before - len(df)} eventi perchè avevano distanze sbagliate")
 
-    # Here we keep only the orbit which have at least two different chambers (with the right amount of hits)
-    df = df.groupby(["ORBIT"]).filter(lambda x: len(x.CHAMBER.value_counts()) >= 2)
+    # In this function we check if there are at least 'MIN_GOOD_CHAMBERS' chambers
+    # What is a good chamber? A good chamber is when
+    # the chamber has at least 'MIN_HITS_PER_CHAMBER' hits in total
+    # the chamber has at least 'MIN_UNIQUE_LAYERS_HIT' layers hit
+    #
+    # But if we find a chamber with more than 'MAX_HITS_PER_CHAMBER' hits, then we discard the whole event
+    def filter_chambers(x):
+        good_ch = []
+        for ch, df_ch in x.groupby("CHAMBER"):
+            if len(df_ch) > MAX_HITS_PER_CHAMBER:
+                return False
 
-    # todo time correction
+            if len(df_ch) >= MIN_HITS_PER_CHAMBER:
+                if len(df_ch.LAYER.value_counts()) >= MIN_UNIQUE_LAYERS_HIT:
+                    if np.all(df_ch.LAYER.value_counts() <= MAX_HITS_PER_LAYER):
+                        good_ch.append(ch)
 
-    print(f"Eventi Finali: {len(df.ORBIT.value_counts())}")
+        return len(good_ch) >= MIN_GOOD_CHAMBERS
 
+    df = df.groupby(["ORBIT"]).filter(filter_chambers)
+
+    # PIECES OF OLD CODE
+    # return len(y) >= MIN_UNIQUE_CHAMBERS_HIT and \
+    #     np.all((y <= MAX_HITS_PER_CHAMBER) & (y >= MIN_HITS_PER_CHAMBER))
+    # df = df.groupby(["ORBIT"]).filter(lambda x: len(x) >= MIN_UNIQUE_LAYERS_HIT * MIN_UNIQUE_CHAMBERS_HIT)
+    # # Here we keep only the chambers with at least 'MIN_DIFFERENT_LAYERS_HIT' different layers hit
+    # df = df.groupby(["ORBIT", "CHAMBER"]) \
+    #     .filter(lambda x: (len(x.LAYER.value_counts()) >= MIN_DIFFERENT_LAYERS_HIT) and
+    #                       (len(x) < MAX_HITS_PER_CHAMBER))
+    # Here we keep only the orbit which have at least 'X' different chambers (with the right amount of hits)
+    # df = df.groupby(["ORBIT"]).filter(lambda x: len(x.CHAMBER.value_counts()) >= MIN_CHAMBERS_HIT)
+
+    # mask_dist = (df.DISTANCE <= 21) & (df.DISTANCE >= 0)
+    # bad_orbits = np.unique(df[~mask_dist].ORBIT.values)
+    # df = df[~df.ORBIT.isin(bad_orbits)]
+    # print(f"Sono stati rimossi {len(bad_orbits)} eventi perchè avevano distanze sbagliate")
+
+    df = df.sort_values(by=["ORBIT"])
     return df
 
 
@@ -85,7 +120,7 @@ def manipulate_df_loop(df):
         df_orbit = df_orbit[~((df_orbit.FPGA == 0) & (df_orbit.CHANNEL >= 64) & (df_orbit.CHANNEL <= 127))]
 
         df_orbit = df_orbit[(df_orbit.CHANNEL != 138)]
-        if len(df_orbit) < MIN_DIFFERENT_LAYERS_HIT * 3 + 1:
+        if len(df_orbit) < MIN_UNIQUE_LAYERS_HIT * 3 + 1:
             continue
 
         # we keep only the first hit in the same cell
@@ -115,7 +150,7 @@ def manipulate_df_loop(df):
         for cham in [0, 2, 3]:
             diff_layers = len(df_orbit[df_orbit.CHAMBER == cham].LAYER.value_counts())
 
-            if diff_layers < MIN_DIFFERENT_LAYERS_HIT:
+            if diff_layers < MIN_UNIQUE_LAYERS_HIT:
                 continue
 
         groups.append(df_orbit)
@@ -127,9 +162,16 @@ def manipulate_df_loop(df):
 
 def main():
     df = load_dataframe("../dataset/data_000001.dat")
+
+    print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
     df_filtered = manipulate_dataframe(df)
+    print(f"Eventi Finali: {len(df_filtered.ORBIT.value_counts())}")
+    print(np.unique(df.ORBIT.values))
+
     groups = [dff for _, dff in df_filtered.groupby("ORBIT")]
-    plot_interactive(groups, landscape=True)
+    good_orbit = np.in1d(np.unique(df.ORBIT.values), (np.unique(df_filtered.ORBIT.values)))
+
+    plot_interactive(groups, landscape=False, add_info=good_orbit)
 
     # manipulate_df_loop(df)
 

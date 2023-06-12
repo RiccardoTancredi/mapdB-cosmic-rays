@@ -12,6 +12,7 @@ _mpoints_lf = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _mpoints_rg = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _figure = None
 _axes = None
+_LANDSCAPE = True
 
 _FIG_SIZE_LS = (12, 8)
 _FIG_SIZE_PT = (14, 7)
@@ -26,11 +27,12 @@ _HALF_CH = CELL_HEIGHT / 2
 
 
 def _create_rectangles(landscape=True):
-    global _initialized
+    global _initialized, _LANDSCAPE
     if _initialized:
         return
 
     _initialized = True
+    _LANDSCAPE = landscape
 
     lay_off_ind = {0: 0, 1: 2, 2: 1, 3: 3}
     lay_off_left = {0: 0, 1: CELL_WIDTH * 0.5, 2: 0, 3: CELL_WIDTH * 0.5}
@@ -153,8 +155,12 @@ def plot_event(chambers, cells, distances=None):
         _rects[cham][cell].set(fill=True)
         if dist:
             cx, cy = point.get_center()
-            _mpoints_lf[cham][cell].set(center=(cx - dist, cy), visible=True)
-            _mpoints_rg[cham][cell].set(center=(cx + dist, cy), visible=True)
+            if _LANDSCAPE:
+                _mpoints_lf[cham][cell].set(center=(cx - dist, cy), visible=True)
+                _mpoints_rg[cham][cell].set(center=(cx + dist, cy), visible=True)
+            else:
+                _mpoints_lf[cham][cell].set(center=(cx, cy - dist), visible=True)
+                _mpoints_rg[cham][cell].set(center=(cx, cy + dist), visible=True)
 
     # plt.show(block=False)
     # plt.pause(0.01)
@@ -166,12 +172,14 @@ class _InteractiveHelper:
         self.running = False
         self.timer = False
         self.dfs = None
+        self.add_info = None
         self.chamber_i = None
         self.chambers = [0, 2, 3]
 
-    def load_data(self, dfs):
+    def load_data(self, dfs, add_info=None):
         self.reset()
         self.dfs = dfs
+        self.add_info = add_info
 
     def reset(self):
         self.dfs = None
@@ -197,6 +205,8 @@ class _InteractiveHelper:
         text = f"ORBIT_ID: {self.dfs[self.index]['ORBIT'].to_numpy()[0]}, INDEX: {self.index}"
         if self.running:
             text += " AUTO: TRUE"
+        if self.add_info is not None:
+            text += f" INFO: {self.add_info[self.index]}"
         return text
 
 
@@ -204,7 +214,7 @@ _int_help = _InteractiveHelper()
 
 
 # dfs: list of dataframes
-def plot_interactive(dfs, landscape=True):
+def plot_interactive(dfs, landscape=True, add_info=None):
     create_canvas(landscape=landscape)
     _reset_cells()
 
@@ -271,7 +281,7 @@ def plot_interactive(dfs, landscape=True):
     def next_(event):
         if _int_help.has_next():
             index = _int_help.get_next()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, None)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -284,14 +294,13 @@ def plot_interactive(dfs, landscape=True):
     def previous(event):
         if _int_help.has_prev():
             index = _int_help.get_prev()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, None)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE)
             _axes.set_title(_int_help.get_title())
-            plt.draw()
             plt.draw()
 
     def auto_go(event):
         if not _int_help.running:
-            timer = _figure.canvas.new_timer(interval=1000)
+            timer = _figure.canvas.new_timer(interval=800)
             timer.add_callback(next_, _axes)
             timer.start()
 
@@ -300,10 +309,12 @@ def plot_interactive(dfs, landscape=True):
         else:
             _int_help.running = False
             _int_help.timer.stop()
+            _axes.set_title(_int_help.get_title())
+            plt.draw()
 
-    _int_help.load_data(dfs)
+    _int_help.load_data(dfs, add_info=add_info)
     _axes.set_title(_int_help.get_title())
-    plot_event(dfs[0].CHAMBER, dfs[0].CELL, None)
+    plot_event(dfs[0].CHAMBER, dfs[0].CELL, dfs[0].DISTANCE)
 
     if landscape:
         axprev = _figure.add_axes([0.7, 0.75, 0.1, 0.075])
@@ -315,12 +326,12 @@ def plot_interactive(dfs, landscape=True):
     else:
         h = 0.9
         p = (0.1, 0.03)
-        axprev = _figure.add_axes([0.8, h+0.03, *p])
+        axprev = _figure.add_axes([0.8, h + 0.03, *p])
         axnext = _figure.add_axes([0.8, h, *p])
-        axautogo = _figure.add_axes([0.8, h-0.03, *p])
-        axchprev = _figure.add_axes([0.2, h+0.03, *p])
+        axautogo = _figure.add_axes([0.8, h - 0.03, *p])
+        axchprev = _figure.add_axes([0.2, h + 0.03, *p])
         axchnext = _figure.add_axes([0.2, h, *p])
-        axchreset = _figure.add_axes([0.2, h-0.03, *p])
+        axchreset = _figure.add_axes([0.2, h - 0.03, *p])
 
     bnext = Button(axnext, 'Next')
     bnext.on_clicked(next_)
