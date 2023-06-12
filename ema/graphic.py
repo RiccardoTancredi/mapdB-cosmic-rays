@@ -16,7 +16,7 @@ _LANDSCAPE = True
 
 _FIG_SIZE_LS = (12, 8)
 _FIG_SIZE_PT = (14, 7)
-_FIG_SIZE_LS_ONE = (12, 2)
+_FIG_SIZE_LS_ONE = (13, 4)
 _FIG_SIZE_PT_ONE = (4, 8)
 
 _OFFSETS = {0: 219.8, 1: 977.3, 2: 1035.6, 3: 1819.8}
@@ -82,7 +82,7 @@ def _get_chambers_y_limits(chamber=None, landscape=True):
 
     min_y = _OFFSETS[chamber]
     max_y = _OFFSETS[chamber] + CELL_HEIGHT * 4
-    more = 0 if landscape else 100
+    more = 100 if landscape else 100
 
     return min_y - CELL_HEIGHT * 2 - more, max_y + CELL_HEIGHT * 2 + more
 
@@ -90,6 +90,7 @@ def _get_chambers_y_limits(chamber=None, landscape=True):
 def _get_chambers_x_limits(chamber=None):
     return -10, 750
 
+# def _set_canvas(chamber)
 
 def create_canvas(chamber=None, landscape=True):
     _create_rectangles(landscape=landscape)
@@ -144,7 +145,7 @@ def _reset_cells():
                 _mpoints_rg[i][j].set(visible=False)
 
 
-def plot_event(chambers, cells, distances=None):
+def plot_event(chambers, cells, distances=None, regr_data=None):
     create_canvas()
     _reset_cells()
     if distances is None:
@@ -162,8 +163,11 @@ def plot_event(chambers, cells, distances=None):
                 _mpoints_lf[cham][cell].set(center=(cx, cy - dist), visible=True)
                 _mpoints_rg[cham][cell].set(center=(cx, cy + dist), visible=True)
 
-    # plt.show(block=False)
-    # plt.pause(0.01)
+    if regr_data is not None:
+        for cham in [0, 2, 3]:
+            x_range = np.linspace(*_get_chambers_x_limits(cham), 100)
+            for slope, intercept in regr_data[cham]:
+                _axes.plot(x_range, x_range * slope + intercept)
 
 
 class _InteractiveHelper:
@@ -212,9 +216,12 @@ class _InteractiveHelper:
 
 _int_help = _InteractiveHelper()
 
+# dummy object to save the reference of the matplotlib buttons, otherwise they get garbage collected
+_s = []
+
 
 # dfs: list of dataframes
-def plot_interactive(dfs, landscape=True, add_info=None):
+def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=True, get_func=None):
     create_canvas(landscape=landscape)
     _reset_cells()
 
@@ -281,7 +288,7 @@ def plot_interactive(dfs, landscape=True, add_info=None):
     def next_(event):
         if _int_help.has_next():
             index = _int_help.get_next()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -294,7 +301,7 @@ def plot_interactive(dfs, landscape=True, add_info=None):
     def previous(event):
         if _int_help.has_prev():
             index = _int_help.get_prev()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE)
+            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -314,7 +321,7 @@ def plot_interactive(dfs, landscape=True, add_info=None):
 
     _int_help.load_data(dfs, add_info=add_info)
     _axes.set_title(_int_help.get_title())
-    plot_event(dfs[0].CHAMBER, dfs[0].CELL, dfs[0].DISTANCE)
+    plot_event(dfs[0].CHAMBER, dfs[0].CELL, dfs[0].DISTANCE, regr_data)
 
     if landscape:
         axprev = _figure.add_axes([0.7, 0.75, 0.1, 0.075])
@@ -347,7 +354,10 @@ def plot_interactive(dfs, landscape=True, add_info=None):
     bchreset = Button(axchreset, 'CH Reset')
     bchreset.on_clicked(reset_ch)
 
-    plt.show()
+    _s.extend([bnext, bprev, bautogo, bchnext, bchprev, bchreset])
+
+    if show:
+        plt.show()
 
 
 if __name__ == "__main__":
