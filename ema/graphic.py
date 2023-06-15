@@ -1,9 +1,7 @@
-import random
-import time
 from matplotlib.widgets import Button
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.patches import Polygon, Rectangle, Circle
+from matplotlib.patches import Rectangle, Circle
 
 _initialized = False
 _rects = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
@@ -12,7 +10,6 @@ _mpoints_lf = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _mpoints_rg = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _figure = None
 _axes = None
-_LANDSCAPE = True
 
 _FIG_SIZE_LS = (12, 8)
 _FIG_SIZE_PT = (14, 7)
@@ -27,12 +24,11 @@ _HALF_CH = CELL_HEIGHT / 2
 
 
 def _create_rectangles(landscape=True):
-    global _initialized, _LANDSCAPE
+    global _initialized
     if _initialized:
         return
 
     _initialized = True
-    _LANDSCAPE = landscape
 
     lay_off_ind = {0: 0, 1: 2, 2: 1, 3: 3}
     lay_off_left = {0: 0, 1: CELL_WIDTH * 0.5, 2: 0, 3: CELL_WIDTH * 0.5}
@@ -65,10 +61,10 @@ def _create_rectangles(landscape=True):
                 rect = Rectangle((x, y), width=cw, height=ch,
                                  edgecolor=edgecolor, fill=False, facecolor="lightseagreen")
 
-                point = Circle((xp, yp), radius=1, color="red")
+                point = Circle((xp, yp), radius=1, color="red", zorder=100)
 
-                point_lf = Circle((xmp1, ymp1), radius=0.5, color="lime", visible=False)
-                point_rg = Circle((xmp2, ymp2), radius=0.5, color="lime", visible=False)
+                point_lf = Circle((xmp1, ymp1), radius=0.5, color="lime", visible=False, zorder=100)
+                point_rg = Circle((xmp2, ymp2), radius=0.5, color="lime", visible=False, zorder=100)
 
                 _rects[cham][index] = rect
                 _points[cham][index] = point
@@ -90,7 +86,20 @@ def _get_chambers_y_limits(chamber=None, landscape=True):
 def _get_chambers_x_limits(chamber=None):
     return -10, 750
 
-# def _set_canvas(chamber)
+
+def _set_canvas(chamber, landscape):
+    if landscape:
+        _figure.set_figwidth(_FIG_SIZE_LS_ONE[0])
+        _figure.set_figheight(_FIG_SIZE_LS_ONE[1])
+        _axes.set_xlim(_get_chambers_x_limits(chamber))
+        _axes.set_ylim(_get_chambers_y_limits(chamber))
+    else:
+        _figure.set_figwidth(_FIG_SIZE_PT_ONE[0])
+        _figure.set_figheight(_FIG_SIZE_PT_ONE[1])
+        _axes.set_xlim(_get_chambers_y_limits(chamber, landscape=False))
+        _axes.set_ylim(_get_chambers_x_limits(chamber))
+        _axes.invert_yaxis()
+
 
 def create_canvas(chamber=None, landscape=True):
     _create_rectangles(landscape=landscape)
@@ -143,31 +152,42 @@ def _reset_cells():
                 _rects[i][j].set(fill=False)
                 _mpoints_lf[i][j].set(visible=False)
                 _mpoints_rg[i][j].set(visible=False)
+    # _plt_artists.clear()
+    for line in list(_axes.lines):
+        line.remove()
 
 
-def plot_event(chambers, cells, distances=None, regr_data=None):
-    create_canvas()
+def _draw_event(chambers, cells, distances=None, regr_data=None, landscape=True):
     _reset_cells()
-    if distances is None:
-        distances = [None] * len(chambers)
 
-    for cham, cell, dist in zip(chambers, cells, distances):
-        point = _points[cham][cell]
+    for cham, cell in zip(chambers, cells):
         _rects[cham][cell].set(fill=True)
-        if dist:
+
+    if regr_data is not None:
+        for cham in [0, 2, 3]:
+            x_range = np.linspace(*_get_chambers_x_limits(cham), 50)
+            for i, (slope, intercept) in enumerate(regr_data[cham]):
+                _axes.plot(x_range, x_range * slope + intercept, label=i)
+                # _plt_artists.append(artist)
+
+    if distances is not None:
+        for cham, cell, dist in zip(chambers, cells, distances):
+            point = _points[cham][cell]
             cx, cy = point.get_center()
-            if _LANDSCAPE:
+            if landscape:
                 _mpoints_lf[cham][cell].set(center=(cx - dist, cy), visible=True)
                 _mpoints_rg[cham][cell].set(center=(cx + dist, cy), visible=True)
             else:
                 _mpoints_lf[cham][cell].set(center=(cx, cy - dist), visible=True)
                 _mpoints_rg[cham][cell].set(center=(cx, cy + dist), visible=True)
 
-    if regr_data is not None:
-        for cham in [0, 2, 3]:
-            x_range = np.linspace(*_get_chambers_x_limits(cham), 100)
-            for slope, intercept in regr_data[cham]:
-                _axes.plot(x_range, x_range * slope + intercept)
+
+def plot_event(chambers, cells, distances=None, regr_data=None, focus_chamber=None, landscape=True):
+    create_canvas(landscape=landscape)
+    _draw_event(chambers, cells, distances, regr_data, landscape=landscape)
+
+    if focus_chamber is not None:
+        _set_canvas(focus_chamber, landscape=landscape)
 
 
 class _InteractiveHelper:
@@ -233,17 +253,7 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
             _int_help.chamber_i += 1
 
         chamb_n = _int_help.chambers[_int_help.chamber_i]
-        if landscape:
-            _figure.set_figwidth(_FIG_SIZE_LS_ONE[0])
-            _figure.set_figheight(_FIG_SIZE_LS_ONE[1])
-            _axes.set_xlim(_get_chambers_x_limits(chamb_n))
-            _axes.set_ylim(_get_chambers_y_limits(chamb_n))
-        else:
-            _figure.set_figwidth(_FIG_SIZE_PT_ONE[0])
-            _figure.set_figheight(_FIG_SIZE_PT_ONE[1])
-            _axes.set_xlim(_get_chambers_y_limits(chamb_n, landscape=False))
-            _axes.set_ylim(_get_chambers_x_limits(chamb_n))
-            _axes.invert_yaxis()
+        _set_canvas(chamb_n, landscape)
 
         plt.draw()
 
@@ -255,40 +265,19 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
             _int_help.chamber_i -= 1
 
         chamb_n = _int_help.chambers[_int_help.chamber_i]
-        if landscape:
-            _figure.set_figwidth(_FIG_SIZE_LS_ONE[0])
-            _figure.set_figheight(_FIG_SIZE_LS_ONE[1])
-            _axes.set_xlim(_get_chambers_x_limits(chamb_n))
-            _axes.set_ylim(_get_chambers_y_limits(chamb_n))
-        else:
-            _figure.set_figwidth(_FIG_SIZE_PT_ONE[0])
-            _figure.set_figheight(_FIG_SIZE_PT_ONE[1])
-            _axes.set_xlim(_get_chambers_y_limits(chamb_n, landscape=False))
-            _axes.set_ylim(_get_chambers_x_limits(chamb_n))
-            _axes.invert_yaxis()
+        _set_canvas(chamb_n, landscape)
         plt.draw()
 
     def reset_ch(event):
         if _int_help.chamber_i is not None:
             _int_help.chamber_i = None
-            if landscape:
-                _figure.set_figwidth(_FIG_SIZE_LS[0])
-                _figure.set_figheight(_FIG_SIZE_LS[1])
-                _axes.set_xlim(_get_chambers_x_limits())
-                _axes.set_ylim(_get_chambers_y_limits())
-            else:
-                _figure.set_figwidth(_FIG_SIZE_PT[0])
-                _figure.set_figheight(_FIG_SIZE_PT[1])
-                _axes.set_xlim(_get_chambers_y_limits())
-                _axes.set_ylim(_get_chambers_x_limits())
-                _axes.invert_yaxis()
-
+            _set_canvas(None, landscape)
             plt.draw()
 
     def next_(event):
         if _int_help.has_next():
             index = _int_help.get_next()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data)
+            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data, landscape=landscape)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -301,7 +290,7 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
     def previous(event):
         if _int_help.has_prev():
             index = _int_help.get_prev()
-            plot_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data)
+            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data, landscape=landscape)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 

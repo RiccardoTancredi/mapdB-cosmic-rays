@@ -1,8 +1,11 @@
+import math
 import pickle
+import time
 
 import numpy as np
 import pandas as pd
 
+from ema import graphic, fitter
 from ema.graphic import plot_interactive, plot_event
 from loader import numpy_loading
 from scipy import stats
@@ -75,7 +78,8 @@ def manipulate_dataframe(df):
     # time correction
     df["T0"] = df.T0 - time_offset_by_chamber[df.CHAMBER]
     # We calculate the distance, and then convert it from um to mm
-    df["DISTANCE"] = (df.TIME - df.T0) * 53.8 / 1000
+    df["REL_TIME"] = df.TIME - df.T0
+    df["DISTANCE"] = df.REL_TIME * 53.8 / 1000
 
     hits_before = len(df)
     df = df[(df.DISTANCE >= 0) & (df.DISTANCE <= 21)]
@@ -102,132 +106,117 @@ def manipulate_dataframe(df):
 
     df = df.groupby(["ORBIT"]).filter(filter_chambers)
 
-    df = df.sort_values(by=["ORBIT"])
+    df = df.sort_values(by=["ORBIT", "CHAMBER", "LAYER", "CELL"])
     return df
 
 
-# def manipulate_df_loop(df):
-#     groups = []
-#
-#     groupby = df.groupby("ORBIT")
-#     print("total", len(groupby))
-#
-#     for i, (orbit, df_orbit) in enumerate(groupby):
-#         df_orbit = df_orbit[~((df_orbit.FPGA == 0) & (df_orbit.CHANNEL >= 64) & (df_orbit.CHANNEL <= 127))]
-#
-#         df_orbit = df_orbit[(df_orbit.CHANNEL != 138)]
-#         if len(df_orbit) < MIN_UNIQUE_LAYERS_HIT * 3 + 1:
-#             continue
-#
-#         # we keep only the first hit in the same cell
-#         df_orbit = df_orbit.sort_values(by=["ORBIT", "BX", "TDC"])
-#         df_orbit = df_orbit.drop_duplicates(["CHANNEL", "FPGA"])
-#
-#         # we create the column for the time (we don't include orbit)
-#         df_orbit["TIME"] = 25 * df_orbit.BX + df_orbit.TDC * 25 / 30
-#
-#         t0 = df_orbit[(df_orbit.CHANNEL == 128) & (df_orbit.FPGA == 1)]
-#         if not len(t0):
-#             # print("Non ho trovato un t0")
-#             continue
-#
-#         if len(t0) > 1:
-#             print("Ho trovato più di un t0")
-#             continue
-#
-#         df_orbit["T0"] = t0["TIME"].values[0]
-#
-#         # We remove the column with t0 and the infamous channel 138
-#         df_orbit = df_orbit[(df_orbit.CHANNEL != 128)]
-#
-#         df_orbit["CHAMBER"] = np.round(df_orbit.FPGA * 2 + df_orbit.CHANNEL // 64)
-#         df_orbit["LAYER"] = (df_orbit.CHANNEL - (df_orbit.CHAMBER % 2) * 64) // 16
-#
-#         for cham in [0, 2, 3]:
-#             diff_layers = len(df_orbit[df_orbit.CHAMBER == cham].LAYER.value_counts())
-#
-#             if diff_layers < MIN_UNIQUE_LAYERS_HIT:
-#                 continue
-#
-#         groups.append(df_orbit)
-#
-#         if len(groups) % 25 == 0:
-#             print(i, len(groups))
-#     # plot_interactive(groups, landscape=False)
-
-
-def alg1(x1, x2, x, y):
-    res = []
-    for i in range(4):
-        p1 = np.array([x1[i], y[i]])
-        p2 = np.array([x2[i], y[i]])
-        a = p1 - np.column_stack([x, y])
-        b = p2 - np.column_stack([x, y])
-        la = np.linalg.norm(a, axis=1)
-        lb = np.linalg.norm(b, axis=1)
-        sa = np.sum(la)
-        sb = np.sum(lb)
-        if sa < sb:
-            res.append(x1[i])
-        elif sb < sa:
-            res.append(x2[i])
-        else:
-            print("UGUALLEEEEEEEE")
-            res.append(x1[i])
-    return np.array(res)
-
-
-def alg2(x1, x2, x, y):
-    res = []
-    for i in range(4):
-        p1 = x1[i]
-        p2 = x2[i]
-        a = p1 - x
-        b = p2 - x
-        la = np.abs(a)
-        lb = np.abs(b)
-        sa = np.sum(la)
-        sb = np.sum(lb)
-        if sa < sb:
-            res.append(x1[i])
-        elif sb < sa:
-            res.append(x2[i])
-        else:
-            print("UGUALLEEEEEEEE")
-            res.append(x1[i])
-    return np.array(res)
-
-
-def isolate_local_tracks(df_ch):
-    plot_event()
+def isolate_local_tracks(df):
+    for orbit, df_orbit in df.groupby("ORBIT"):
+        for ch, df_ch in df_orbit.groupby("CHAMBER"):
+            plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, focus_chamber=ch)
+            graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
+            plt.waitforbuttonpress()
 
 
 # hits for a chamber
 def calculate_local_track(df):
-    x1 = df.CELL_X - df.DISTANCE
-    x2 = df.CELL_X + df.DISTANCE
-    y = df.CELL_Y
-    xgood1 = alg1(x1.values, x2.values, df.CELL_X.values, df.CELL_Y.values)
-    xgood2 = alg2(x1.values, x2.values, df.CELL_X.values, df.CELL_Y.values)
-    res1 = stats.linregress(xgood1, y)
-    res2 = stats.linregress(xgood2, y)
-    # slope, intercept = res.slope, res.intercept
-    print(res1.slope, res1.intercept)
-    print(res2.slope, res2.intercept)
-    return res1, res2
+    count = 0
+    chs = 0
+
+    orbit_groupby = df.groupby("ORBIT")
+
+    tracks = np.zeros(shape=(len(orbit_groupby) * 3, 4))
+    for orbit, df_orbit in orbit_groupby:
+        for ch, df_ch in df_orbit.groupby("CHAMBER"):
+            if len(df_ch) != 4:
+                continue
+
+            x1 = (df_ch.CELL_X - df_ch.DISTANCE).values
+            x2 = (df_ch.CELL_X + df_ch.DISTANCE).values
+            x_cell = df_ch.CELL_X.values
+            y_cell = df_ch.CELL_Y.values
+
+            # res_lr1, comb1, debug1 = fitter.fit_by_pair_dist(x1, x2, x_cell, y_cell, debug=True)
+            res_lr1, comb1, debug1 = fitter.fit_by_dist(x1, x2, x_cell, y_cell, debug=True)
+            res_lr2, comb2, debug2 = fitter.fit_by_dist(x1, x2, x_cell, y_cell, debug=True, only_x=True)
+            res_bf, comb_bf, debug_bf = fitter.fit_by_bruteforce(x1, x2, x_cell, y_cell, debug=True)
+            res_bf_x, comb_bf_x, debug_bf_x = fitter.fit_by_bruteforce(x1, x2, x_cell, y_cell, debug=True,
+                                                                       res_method="x")
+
+            tracks[chs, :] = [orbit, ch, res_bf.slope, res_bf.intercept]
+            df.loc[df_ch.index, "HIT_X"] = np.where(comb_bf == 0, x1, x2)
+
+            chs += 1
+            if np.all(comb1 == comb_bf):
+                count += 1
+
+            # regr_data = [[], [], [], []]
+            # regr_data[ch].append([res_lr1.slope, res_lr1.intercept])
+            # regr_data[ch].append([res_lr2.slope, res_lr2.intercept])
+            # regr_data[ch].append([res_bf.slope, res_bf.intercept])
+            # regr_data[ch].append([res_bf_x.slope, res_bf_x.intercept])
+            #
+            # with np.printoptions(precision=3, suppress=True):
+            #     print(f"{comb_bf}, {res_bf.slope:.3f}, {res_bf.intercept:.3f}, {debug_bf[2]}")
+            #     # print(f"{comb1}, {res_lr1.slope:.3f}, {res_lr1.intercept:.3f},"
+            #     #       f" {debug1[2]}, {debug1[:2]}")
+            #     # print(f"{comb2}, {res_lr2.slope:.3f}, {res_lr2.intercept:.3f},"
+            #     #       f" {debug2[2]},  {debug2[:2]}")
+            #     # print(f"{comb_bf}, {res_bf.slope:.3f}, {res_bf.intercept:.3f}, {debug_bf[2]}")
+            #     # print(f"{comb_bf_x}, {res_bf_x.slope:.3f}, {res_bf_x.intercept:.3f}, {debug_bf_x[2]}")
+            #     # print("---------------------")
+            #
+            # plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, regr_data=regr_data, focus_chamber=ch)
+            # graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
+            # plt.legend()
+            # plt.waitforbuttonpress()
+    print(count, chs, count / chs)
+    tracks = pd.DataFrame(data=tracks[tracks[:, 0] != 0], columns=["ORBIT", "CHAMBER", "SLOPE", "INTERCEPT"])
+    return df, tracks
 
 
-# def generate_data_provider(dfs, local_tracks=True):
-#     def data_provider(index: int):
-#         res = []
-#         res.append(dfs[index])
-#
-#         if local_tracks:
-#             a = calculate_local_track(df)
-#             res.append()
-#
-#
-#     return data_provider
+def calculate_global_track(df, tracks):
+    diff_slope = [[], [], [], []]
+    for orbit, df_orbit in df.groupby("ORBIT"):
+
+        df_track = tracks[tracks.ORBIT == orbit]
+        if len(df_track) != 2:
+            continue
+
+        # regr_data = [[], [], [], []]
+        # for _, row in df_track.iterrows():
+        #     regr_data[int(row.CHAMBER)].append([row.SLOPE, row.INTERCEPT])
+        #
+        # plot_event(df_orbit.CHAMBER, df_orbit.CELL, df_orbit.DISTANCE, regr_data=regr_data)
+        # graphic._axes.set_title(f"Orbit: {orbit}")
+        # plt.legend()
+        # plt.waitforbuttonpress()
+
+        chambers = df_track.CHAMBER.unique().astype(int)
+        slopes, intercepts = df_track.SLOPE.values, df_track.INTERCEPT.values
+        slope_diff = np.abs(slopes[0] - slopes[1])
+        same_dir = (slopes[0] * slopes[1]) > 0
+        if not same_dir:
+            continue
+        delta_x = (df_orbit.CELL_Y - intercepts[0]) / slopes[0] - df_orbit.HIT_X
+
+        res_lr = stats.linregress(df_orbit.HIT_X, df_orbit.CELL_Y)
+        slope, intercept = res_lr.slope, res_lr.intercept
+
+        x_range = np.linspace(-10, 700, 50)
+        for i, ch in enumerate(chambers):
+            diff_slope[ch].append(slope - slopes[i])
+
+        # graphic._axes.plot(x_range, x_range * slope + intercept, label="Global fit")
+        # plt.legend()
+        # plt.waitforbuttonpress()
+
+    plt.figure(figsize=(12, 5))
+    for i, ch in enumerate([0, 2, 3]):
+        plt.subplot(1, 3, i + 1)
+        nbins = int(np.sqrt(len(diff_slope[ch])))
+        plt.hist(np.arctan(diff_slope[ch]) * 180 / np.pi, bins=nbins)
+    plt.show()
 
 
 def main():
@@ -236,17 +225,23 @@ def main():
     print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
     df_filtered = manipulate_dataframe(df)
     print(f"Eventi Finali: {len(df_filtered.ORBIT.value_counts())}")
-    print(np.unique(df.ORBIT.values))
-
-    groups = [dff for _, dff in df_filtered.groupby("ORBIT")]
+    # print(np.unique(df.ORBIT.values))
 
     # with open("./pickled/data.bin", "wb") as f:
     #     pickle.dump([df, df_filtered, groups], f)
-    #
+
     # with open("./pickled/data.bin", "rb") as f:
     #     df, df_filtered, groups = pickle.load(f)
-    #
-    # grouped_ch = [a for _, a in groups[0].groupby("CHAMBER")]
+
+    df_filtered, tracks = calculate_local_track(df_filtered)
+    # with open("./pickled/tracks.bin", "wb") as f:
+    #     pickle.dump([df_filtered, tracks], f)
+
+    # with open("./pickled/tracks.bin", "rb") as f:
+    #     df_filtered, tracks = pickle.load(f)
+
+    calculate_global_track(df_filtered, tracks)
+
     # regr_data = [[], [], [], []]
     # for i in range(len(grouped_ch)):
     #     res1, res2 = calculate_local_track(grouped_ch[i])
@@ -255,9 +250,8 @@ def main():
     #     regr_data[chami].append([res2.slope, res2.intercept])
     #     # graphic._axes.scatter(x1, y, s=10)
 
-    plot_interactive(groups, landscape=True, regr_data=None, show=False)
-    plt.show(block=True)
-
+    # plot_interactive(groups, landscape=True, regr_data=None, show=False)
+    # plt.show(block=True)
 
     # # good_orbit = np.in1d(np.unique(df.ORBIT.values), (np.unique(df_filtered.ORBIT.values)))
     # plot_interactive(groups, landscape=False, add_info=None)

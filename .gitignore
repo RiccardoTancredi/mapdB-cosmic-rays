@@ -1,7 +1,8 @@
 dataset/
 *credentials.json
 ema/*.pdf
-
+ema/pickled/
+ema/test/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
