@@ -1,3 +1,4 @@
+import pandas as pd
 from matplotlib.widgets import Button
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,6 +12,7 @@ _mpoints_rg = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _figure = None
 _axes = None
 
+_DPI = 128
 _FIG_SIZE_LS = (12, 8)
 _FIG_SIZE_PT = (14, 7)
 _FIG_SIZE_LS_ONE = (13, 4)
@@ -89,13 +91,15 @@ def _get_chambers_x_limits(chamber=None):
 
 def _set_canvas(chamber, landscape):
     if landscape:
-        _figure.set_figwidth(_FIG_SIZE_LS_ONE[0])
-        _figure.set_figheight(_FIG_SIZE_LS_ONE[1])
+        sizes = _FIG_SIZE_LS_ONE if chamber is not None else _FIG_SIZE_LS
+        _figure.set_figwidth(sizes[0])
+        _figure.set_figheight(sizes[1])
         _axes.set_xlim(_get_chambers_x_limits(chamber))
         _axes.set_ylim(_get_chambers_y_limits(chamber))
     else:
-        _figure.set_figwidth(_FIG_SIZE_PT_ONE[0])
-        _figure.set_figheight(_FIG_SIZE_PT_ONE[1])
+        sizes = _FIG_SIZE_PT_ONE if chamber is not None else _FIG_SIZE_PT
+        _figure.set_figwidth(sizes[0])
+        _figure.set_figheight(sizes[1])
         _axes.set_xlim(_get_chambers_y_limits(chamber, landscape=False))
         _axes.set_ylim(_get_chambers_x_limits(chamber))
         _axes.invert_yaxis()
@@ -109,16 +113,16 @@ def create_canvas(chamber=None, landscape=True):
 
     if landscape:
         if chamber is not None:
-            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_LS_ONE)
+            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_LS_ONE, dpi=_DPI)
         else:
-            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_LS)
+            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_LS, dpi=_DPI)
         _axes.set_xlim(_get_chambers_x_limits(chamber))
         _axes.set_ylim(_get_chambers_y_limits(chamber, landscape=True))
     else:
         if chamber is not None:
-            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_PT_ONE)
+            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_PT_ONE, dpi=_DPI)
         else:
-            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_PT)
+            _figure, _axes = plt.subplots(figsize=_FIG_SIZE_PT, dpi=_DPI)
         _axes.set_xlim(_get_chambers_y_limits(chamber, landscape=False))
         _axes.set_ylim(_get_chambers_x_limits(chamber))
 
@@ -152,7 +156,11 @@ def _reset_cells():
                 _rects[i][j].set(fill=False)
                 _mpoints_lf[i][j].set(visible=False)
                 _mpoints_rg[i][j].set(visible=False)
-    # _plt_artists.clear()
+
+    if len(_axes.lines) > 0:
+        _axes.get_legend().remove()
+        _axes.set_prop_cycle(None)
+
     for line in list(_axes.lines):
         line.remove()
 
@@ -168,7 +176,9 @@ def _draw_event(chambers, cells, distances=None, regr_data=None, landscape=True)
             x_range = np.linspace(*_get_chambers_x_limits(cham), 50)
             for i, (slope, intercept) in enumerate(regr_data[cham]):
                 _axes.plot(x_range, x_range * slope + intercept, label=i)
-                # _plt_artists.append(artist)
+
+    if len(_axes.lines) > 0:
+        _axes.legend()
 
     if distances is not None:
         for cham, cell, dist in zip(chambers, cells, distances):
@@ -197,13 +207,15 @@ class _InteractiveHelper:
         self.timer = False
         self.dfs = None
         self.add_info = None
+        self.regr_data = None
         self.chamber_i = None
         self.chambers = [0, 2, 3]
 
-    def load_data(self, dfs, add_info=None):
+    def load_data(self, dfs, add_info=None, regr_data=None):
         self.reset()
         self.dfs = dfs
         self.add_info = add_info
+        self.regr_data = regr_data
 
     def reset(self):
         self.dfs = None
@@ -226,11 +238,14 @@ class _InteractiveHelper:
         return self.index
 
     def get_title(self):
-        text = f"ORBIT_ID: {self.dfs[self.index]['ORBIT'].to_numpy()[0]}, INDEX: {self.index}"
-        if self.running:
-            text += " AUTO: TRUE"
-        if self.add_info is not None:
-            text += f" INFO: {self.add_info[self.index]}"
+        try:
+            text = f"ORBIT_ID: {self.dfs[self.index].ORBIT.to_numpy()[0]}, INDEX: {self.index}"
+            if self.running:
+                text += " AUTO: TRUE"
+            if self.add_info is not None:
+                text += f" INFO: {self.add_info[self.index]}"
+        except Exception as e:
+            text = "CIAO"
         return text
 
 
@@ -240,8 +255,14 @@ _int_help = _InteractiveHelper()
 _s = []
 
 
+# def plot_simple_interactive(chambers, cells, distances=None, landscape=True):
+#     df = pd.DataFrame(data=[chambers, cells, distances], columns=["CHAMBER", "CELL", "DISTANCE"])
+#     plot_interactive([df], landscape=landscape)
+
+
 # dfs: list of dataframes
-def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=True, get_func=None):
+def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None):
+    regr_data = regr_data if regr_data is not None else [None] * len(dfs)
     create_canvas(landscape=landscape)
     _reset_cells()
 
@@ -277,7 +298,8 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
     def next_(event):
         if _int_help.has_next():
             index = _int_help.get_next()
-            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data, landscape=landscape)
+            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data=regr_data[index],
+                        landscape=landscape)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -290,7 +312,8 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
     def previous(event):
         if _int_help.has_prev():
             index = _int_help.get_prev()
-            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data, landscape=landscape)
+            _draw_event(dfs[index].CHAMBER, dfs[index].CELL, dfs[index].DISTANCE, regr_data=regr_data[index],
+                        landscape=landscape)
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
@@ -308,9 +331,10 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
             _axes.set_title(_int_help.get_title())
             plt.draw()
 
-    _int_help.load_data(dfs, add_info=add_info)
+    _int_help.load_data(dfs, add_info=add_info, regr_data=regr_data)
     _axes.set_title(_int_help.get_title())
-    plot_event(dfs[0].CHAMBER, dfs[0].CELL, dfs[0].DISTANCE, regr_data)
+
+    plot_event(dfs[0].CHAMBER, dfs[0].CELL, dfs[0].DISTANCE, regr_data=regr_data[0])
 
     if landscape:
         axprev = _figure.add_axes([0.7, 0.75, 0.1, 0.075])
@@ -344,9 +368,6 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None, show=Tr
     bchreset.on_clicked(reset_ch)
 
     _s.extend([bnext, bprev, bautogo, bchnext, bchprev, bchreset])
-
-    if show:
-        plt.show()
 
 
 if __name__ == "__main__":

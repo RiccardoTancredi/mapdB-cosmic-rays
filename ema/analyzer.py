@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from ema import graphic, fitter
+from ema.fitter import get_residuals_eucl_squared
 from ema.graphic import plot_interactive, plot_event
 from loader import numpy_loading
 from scipy import stats
@@ -122,10 +123,11 @@ def isolate_local_tracks(df):
 def calculate_local_track(df):
     count = 0
     chs = 0
+    PLOT = False
 
     orbit_groupby = df.groupby("ORBIT")
 
-    tracks = np.zeros(shape=(len(orbit_groupby) * 3, 4))
+    tracks = np.zeros(shape=(len(orbit_groupby) * 3, 6))
     for orbit, df_orbit in orbit_groupby:
         for ch, df_ch in df_orbit.groupby("CHAMBER"):
             if len(df_ch) != 4:
@@ -136,95 +138,156 @@ def calculate_local_track(df):
             x_cell = df_ch.CELL_X.values
             y_cell = df_ch.CELL_Y.values
 
-            # res_lr1, comb1, debug1 = fitter.fit_by_pair_dist(x1, x2, x_cell, y_cell, debug=True)
-            res_lr1, comb1, debug1 = fitter.fit_by_dist(x1, x2, x_cell, y_cell, debug=True)
-            res_lr2, comb2, debug2 = fitter.fit_by_dist(x1, x2, x_cell, y_cell, debug=True, only_x=True)
             res_bf, comb_bf, debug_bf = fitter.fit_by_bruteforce(x1, x2, x_cell, y_cell, debug=True)
-            res_bf_x, comb_bf_x, debug_bf_x = fitter.fit_by_bruteforce(x1, x2, x_cell, y_cell, debug=True,
-                                                                       res_method="x")
 
-            tracks[chs, :] = [orbit, ch, res_bf.slope, res_bf.intercept]
+            bf_lr_sorted = sorted(debug_bf[0], key=lambda x: x[2])
+            slope_silver, inter_silver, comb_silver = None, None, None
+
+            slope_silver = bf_lr_sorted[1][0].slope
+            inter_silver = bf_lr_sorted[1][0].intercept
+            comb_silver = bf_lr_sorted[1][1]
+
+            tracks[chs, 0:4] = [orbit, ch, res_bf.slope, res_bf.intercept]
             df.loc[df_ch.index, "HIT_X"] = np.where(comb_bf == 0, x1, x2)
 
-            chs += 1
-            if np.all(comb1 == comb_bf):
-                count += 1
+            if slope_silver is not None:
+                tracks[chs, 4:] = [slope_silver, inter_silver]
+                df.loc[df_ch.index, "HIT_X2"] = np.where(comb_silver == 0, x1, x2)
 
-            # regr_data = [[], [], [], []]
-            # regr_data[ch].append([res_lr1.slope, res_lr1.intercept])
-            # regr_data[ch].append([res_lr2.slope, res_lr2.intercept])
-            # regr_data[ch].append([res_bf.slope, res_bf.intercept])
-            # regr_data[ch].append([res_bf_x.slope, res_bf_x.intercept])
-            #
-            # with np.printoptions(precision=3, suppress=True):
-            #     print(f"{comb_bf}, {res_bf.slope:.3f}, {res_bf.intercept:.3f}, {debug_bf[2]}")
-            #     # print(f"{comb1}, {res_lr1.slope:.3f}, {res_lr1.intercept:.3f},"
-            #     #       f" {debug1[2]}, {debug1[:2]}")
-            #     # print(f"{comb2}, {res_lr2.slope:.3f}, {res_lr2.intercept:.3f},"
-            #     #       f" {debug2[2]},  {debug2[:2]}")
-            #     # print(f"{comb_bf}, {res_bf.slope:.3f}, {res_bf.intercept:.3f}, {debug_bf[2]}")
-            #     # print(f"{comb_bf_x}, {res_bf_x.slope:.3f}, {res_bf_x.intercept:.3f}, {debug_bf_x[2]}")
-            #     # print("---------------------")
-            #
-            # plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, regr_data=regr_data, focus_chamber=ch)
-            # graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
-            # plt.legend()
-            # plt.waitforbuttonpress()
+            chs += 1
+            # if np.all(comb1 == comb_bf):
+            #     count += 1
+
+            if PLOT:
+                regr_data = [[], [], [], []]
+                regr_data[ch].append([res_bf.slope, res_bf.intercept])
+                if slope_silver:
+                    regr_data[ch].append([slope_silver, inter_silver])
+
+                with np.printoptions(precision=3, suppress=True):
+                    print(f"{comb_bf}, {res_bf.slope:.3f}, {res_bf.intercept:.3f}, {debug_bf[2]}")
+
+                plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, regr_data=regr_data, focus_chamber=ch)
+                graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
+                plt.legend()
+                plt.waitforbuttonpress()
     print(count, chs, count / chs)
-    tracks = pd.DataFrame(data=tracks[tracks[:, 0] != 0], columns=["ORBIT", "CHAMBER", "SLOPE", "INTERCEPT"])
+    tracks = pd.DataFrame(data=tracks[tracks[:, 0] != 0],
+                          columns=["ORBIT", "CHAMBER", "SLOPE", "INTERCEPT", "SLOPE2", "INTERCEPT2"])
     return df, tracks
 
 
 def calculate_global_track(df, tracks):
-    diff_slope = [[], [], [], []]
+    diff_angles = [[], [], [], []]
     for orbit, df_orbit in df.groupby("ORBIT"):
 
         df_track = tracks[tracks.ORBIT == orbit]
-        if len(df_track) != 2:
+        if len(df_track) < 2:
             continue
-
-        # regr_data = [[], [], [], []]
-        # for _, row in df_track.iterrows():
-        #     regr_data[int(row.CHAMBER)].append([row.SLOPE, row.INTERCEPT])
-        #
-        # plot_event(df_orbit.CHAMBER, df_orbit.CELL, df_orbit.DISTANCE, regr_data=regr_data)
-        # graphic._axes.set_title(f"Orbit: {orbit}")
-        # plt.legend()
-        # plt.waitforbuttonpress()
 
         chambers = df_track.CHAMBER.unique().astype(int)
-        slopes, intercepts = df_track.SLOPE.values, df_track.INTERCEPT.values
+
+        hits_x_list = []
+        hits_y_list = []
+        for ch in [0, 2, 3]:
+            ch_hits = df_orbit[df_orbit.CHAMBER == ch]
+            if len(ch_hits) > 0 and not np.any(np.isnan(ch_hits.HIT_X)):
+                hits_x_list.append((ch_hits.HIT_X, ch_hits.HIT_X2))
+                hits_y_list.append(ch_hits.CELL_Y)
+
+        result_list = fitter.fit_chambers_by_bruteforce(*hits_x_list, ys=hits_y_list)
+
+        slopes = np.zeros(4)
+        intercepts = np.zeros(4)
+
+        slopes[chambers] = df_track.SLOPE.values
+        intercepts[chambers] = df_track.INTERCEPT.values
+
+        # slopes, intercepts = df_track.SLOPE.values, df_track.INTERCEPT.values
+        angles = np.arctan(slopes) * 180 / np.pi
+        slope, intercept = result_list[0][0].slope, result_list[0][0].intercept
+        angle = np.arctan(slope) * 180 / np.pi
+        for i, ch in enumerate(chambers):
+            diff_angles[ch].append(angle - angles[ch])
+
         slope_diff = np.abs(slopes[0] - slopes[1])
         same_dir = (slopes[0] * slopes[1]) > 0
-        if not same_dir:
-            continue
         delta_x = (df_orbit.CELL_Y - intercepts[0]) / slopes[0] - df_orbit.HIT_X
 
-        res_lr = stats.linregress(df_orbit.HIT_X, df_orbit.CELL_Y)
-        slope, intercept = res_lr.slope, res_lr.intercept
+        if same_dir:
+            continue
 
-        x_range = np.linspace(-10, 700, 50)
-        for i, ch in enumerate(chambers):
-            diff_slope[ch].append(slope - slopes[i])
-
-        # graphic._axes.plot(x_range, x_range * slope + intercept, label="Global fit")
+        # plot_event(df_orbit.CHAMBER, df_orbit.CELL, df_orbit.DISTANCE)
+        # x_range = np.linspace(-10, 700, 50)
+        # for i, (res_lr, comb, sres, res) in enumerate(result_list):
+        #     original = np.all(comb == 0)
+        #     if i >= 1 and not original:
+        #         continue
+        #     label = "Original" if original else str(comb)
+        #     graphic._axes.plot(x_range, x_range * res_lr.slope + res_lr.intercept, label=f"{i} " + label)
+        # for slope_i, intercept_i in zip(slopes, intercepts):
+        #     graphic._axes.plot(x_range, x_range * slope_i + intercept_i, label=f"{i} ", ls="dashed")
+        # graphic._axes.set_title(f"Orbit: {orbit}")
         # plt.legend()
-        # plt.waitforbuttonpress()
+        #
+        # while not plt.waitforbuttonpress():
+        #     pass
 
-    plt.figure(figsize=(12, 5))
+    MAX_ANGLE = 15
+    plt.figure(figsize=(12, 10))
     for i, ch in enumerate([0, 2, 3]):
-        plt.subplot(1, 3, i + 1)
-        nbins = int(np.sqrt(len(diff_slope[ch])))
-        plt.hist(np.arctan(diff_slope[ch]) * 180 / np.pi, bins=nbins)
+        plt.subplot(2, 3, i + 1 + 3)
+        nbins = int(np.sqrt(len(diff_angles[ch])))
+        plt.hist(diff_angles[ch], bins=nbins)
+
+        values = np.array(diff_angles[ch])
+        values = values[(values > -MAX_ANGLE) & (values < MAX_ANGLE)]
+
+        plt.subplot(2, 3, i + 1)
+        nbins = int(np.sqrt(len(values))) or 1
+        plt.hist(values, bins=nbins)
     plt.show()
 
 
-def main():
-    df = load_dataframe("../dataset/data_000001.dat")
+def get_pickled(path):
+    with open(path, "rb") as f:
+        return pickle.load(f)
 
-    print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
-    df_filtered = manipulate_dataframe(df)
-    print(f"Eventi Finali: {len(df_filtered.ORBIT.value_counts())}")
+
+def set_pickled(path, obj):
+    with open(path, "wb") as f:
+        pickle.dump(obj, f)
+
+
+def main():
+    filenames = ["../dataset/data_000000.dat", "../dataset/data_000001.dat", "../dataset/data_000002.dat",
+                 "../dataset/data_000003.dat", "../dataset/data_000004.dat", "../dataset/data_000005.dat"]
+
+    # big_df_filtered = None
+    # for filename in filenames:
+    #     print(f"Carico il file: {filename}")
+    #     df = load_dataframe(filename)
+    #     print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
+    #     df_filtered = manipulate_dataframe(df)
+    #     print(f"Eventi Finali: {len(df_filtered.ORBIT.value_counts())}")
+    #
+    #     if big_df_filtered is None:
+    #         big_df_filtered = df_filtered
+    #     else:
+    #         big_df_filtered = pd.concat([big_df_filtered, df_filtered], ignore_index=True)
+    #
+    #     print("--------------------------------------")
+    #
+    # big_df_filtered, tracks = calculate_local_track(big_df_filtered)
+    # set_pickled("./pickled/big_things.bin", [big_df_filtered, tracks])
+
+    big_df_filtered, tracks = get_pickled("./pickled/big_things.bin")
+    calculate_global_track(big_df_filtered, tracks)
+
+    # df = load_dataframe("../dataset/data_000001.dat")
+    # print(f"Eventi Iniziali: {len(df.ORBIT.value_counts())}")
+    # df_filtered = manipulate_dataframe(df)
+    # print(f"Eventi Finali: {len(df_filtered.ORBIT.value_counts())}")
     # print(np.unique(df.ORBIT.values))
 
     # with open("./pickled/data.bin", "wb") as f:
@@ -233,14 +296,14 @@ def main():
     # with open("./pickled/data.bin", "rb") as f:
     #     df, df_filtered, groups = pickle.load(f)
 
-    df_filtered, tracks = calculate_local_track(df_filtered)
+    # df_filtered, tracks = calculate_local_track(df_filtered, df_raw=df)
     # with open("./pickled/tracks.bin", "wb") as f:
     #     pickle.dump([df_filtered, tracks], f)
 
     # with open("./pickled/tracks.bin", "rb") as f:
     #     df_filtered, tracks = pickle.load(f)
-
-    calculate_global_track(df_filtered, tracks)
+    #
+    # calculate_global_track(df_filtered, tracks)
 
     # regr_data = [[], [], [], []]
     # for i in range(len(grouped_ch)):
