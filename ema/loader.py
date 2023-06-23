@@ -42,6 +42,7 @@ def timeit(func, count, args=None, kwargs=None):
     print(f"AVG: {total / count:.2f} s")
 
 
+# Not used
 def vanilla_loading(path, output=True):
     hits = 0
     non_hits = 0
