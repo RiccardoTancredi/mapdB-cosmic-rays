@@ -1,0 +1,9 @@
+# # we construct the data for the function just below
+# hits_x_list = []
+# hits_y_list = []
+# for ch in [0, 2, 3]:
+#     ch_hits = df_orbit[(df_orbit.CHAMBER == ch) & (~np.isnan(df_orbit.HIT_X))]
+#     if len(ch_hits) > 0:
+#         hits_x_list.append((ch_hits.HIT_X, ch_hits.HIT_X2))
+#         hits_y_list.append(ch_hits.CELL_Y)
+# result_list = fitter.fit_chambers_by_bruteforce(*hits_x_list, ys=hits_y_list)

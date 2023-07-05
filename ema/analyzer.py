@@ -2,9 +2,12 @@ import pickle
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from ema import graphic, fitter
-from ema.graphic import plot_interactive, plot_event
+from ema.fitter import simple_fit, get_residuals_eucl_squared
+from ema.graphic import plot_interactive, plot_event, plot_pattern_recognition_steps, plot_grouping_result, write_text, \
+    plot_interactive2
 from loader import numpy_loading
 import matplotlib.pyplot as plt
 
@@ -37,6 +40,18 @@ MAX_HITS_PER_LAYER = 3
 # Numero minimo di 'buone camere' per considerare l'intero evento, la definizione di
 # buona camera è specificata più sotto
 MIN_GOOD_CHAMBERS = 2
+
+MIN_PR_HIT = 3
+
+
+def get_layers(cells):
+    # Here we assign the correct LAYER only to the cell belonging to layer 0 and 3
+    # because the modulo operator is good only for the layer 0 and 3, not the 1 and 2
+    # because the 4*k cell is in the first row, the 4*k+3 cell is in the fourth row, but
+    # the 4*k+1 is in the third and the 4*k+2 in the second, so these last two are flipped
+    layers = cells % 4
+    # Here we swap layer 1 with layer 2 (the incorrect ones)
+    return np.where((layers == 1) | (layers == 2), layers % 2 + 1, layers)
 
 
 # Questa funzione ha lo scopo di prendere il dataframe grezzo e produrne uno con soltanto gli eventi
@@ -72,13 +87,7 @@ def manipulate_dataframe(df):
     df["CHAMBER"] = np.round(df.FPGA * 2 + df.CHANNEL // 64)
     # Cell is a number from 0-63 for every chamber (like shown in the pdf)
     df["CELL"] = (df.CHANNEL - (df.CHAMBER % 2) * 64)
-    # Here we assign the correct LAYER only to the cell belonging to layer 0 and 3
-    # because the modulo operator is good only for the layer 0 and 3, not the 1 and 2
-    # because the 4*k cell is in the first row, the 4*k+3 cell is in the fourth row, but
-    # the 4*k+1 is in the third and the 4*k+2 in the second, so these last two are flipped
-    df["LAYER"] = df.CELL % 4
-    # Here we swap layer 1 with layer 2 (the incorrect ones)
-    df["LAYER"] = np.where((df.LAYER == 1) | (df.LAYER == 2), df.LAYER % 2 + 1, df.LAYER)
+    df["LAYER"] = get_layers(df.CELL)
 
     # Here we assign to every hit the position of the central cable of that cell (basically the center of the cell)
     df["CELL_X"] = (df.CELL // 4) * CELL_WIDTH + CELL_WIDTH * 0.5 + CELL_WIDTH * 0.5 * (df.LAYER % 2)
@@ -135,33 +144,214 @@ def manipulate_dataframe(df):
     return df
 
 
-# Not used
-def isolate_local_tracks(df):
-    for orbit, df_orbit in df.groupby("ORBIT"):
-        for ch, df_ch in df_orbit.groupby("CHAMBER"):
-            plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, focus_chamber=ch)
-            graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
-            plt.waitforbuttonpress()
+def group_hits(df):
+    n = len(df)
+    matx = df.CELL_X.values.reshape(-1, 1) - df.CELL_X.values.reshape(1, -1)
+    maty = df.CELL_Y.values.reshape(-1, 1) - df.CELL_Y.values.reshape(1, -1)
+    # 45 approx sqrt(21^2 + (3*13)^2) = 44.29
+    mat = np.sqrt(matx ** 2 + maty ** 2) < 45  # todo do not sqrt
+
+    to_visit_global = set(range(n))
+    groups = []
+    while to_visit_global:
+        i = to_visit_global.pop()
+        group = set(np.where(mat[i, :])[0])
+        to_visit_local = group - {i}
+        while to_visit_local:
+            j = to_visit_local.pop()
+            j_nodes = np.where(mat[j, :])[0]
+            group.update(j_nodes)
+
+            if len(j_nodes) == n:
+                to_visit_global.clear()
+                break
+
+            to_visit_global.remove(j)
+            to_visit_local.update(to_visit_global.intersection(j_nodes))
+
+        groups.append(df.iloc[list(group)])
+    return groups
+
+
+def count_hits_in_cone(cell, layer, other_cells):
+    layer_map = [[0, np.array([-2, 2, -3, 1, 5, -5, -1, 3, 7])],
+                 [2, np.array([0, 4, 1, 5, -1, 3, 7])],
+                 [1, np.array([-2, 2, -4, 0, 4, 3, -1])],
+                 [3, np.array([1, 5, -2, 2, 6, -4, 0, 4, 8])]]
+    offset, data = layer_map[layer]
+    data = data + (cell - offset)
+    data = data[(data >= 0) & (data <= 63)]
+    return np.sum([1 for c in other_cells if c in data])
+
+
+def discard_obvious_points(df):
+    nlayers = len(df.LAYER.value_counts())
+    np.empty(shape=(len(df), 2))
+    x_values = np.concatenate([df.CELL_X - df.DISTANCE, df.CELL_X + df.DISTANCE])
+    y_values = np.tile(df.CELL_Y.values, 2)
+
+    layers = np.tile(df.LAYER.values, 2)
+    offsets = np.array([0, 45, 70, 95])
+    matx = x_values.reshape(-1, 1) - x_values.reshape(1, -1)
+    maty = y_values.reshape(-1, 1) - y_values.reshape(1, -1)
+    mat = np.sqrt(matx ** 2 + maty ** 2)  # < offsets[layers]
+
+    a = 1
+
+
+def solve_layer_ambiguity(df, debug=False):
+    cell_per_layers = df.LAYER.value_counts()
+    if np.max(cell_per_layers) > 1:
+        for layer, occ in cell_per_layers.items():
+            if occ == 1:
+                continue
+
+            df_layer = df[df.LAYER == layer]
+            df_olayer = df[df.LAYER != layer]
+            # x_values = np.empty(len(df_layer) * 2, dtype=float)
+            # x_values[0::2] = df_layer.CELL_X - df_layer.DISTANCE
+            # x_values[1::2] = df_layer.CELL_X + df_layer.DISTANCE
+            # y_values = np.repeat(df_layer.CELL_Y.values, repeats=2)
+            x_values = np.concatenate([df_layer.CELL_X - df_layer.DISTANCE, df_layer.CELL_X + df_layer.DISTANCE])
+            y_values = np.tile(df_layer.CELL_Y.values, 2)
+            # x_ovalues = np.empty(len(df_olayer) * 2, dtype=float)
+            # x_ovalues[0::2] = df_olayer.CELL_X - df_olayer.DISTANCE
+            # x_ovalues[1::2] = df_olayer.CELL_X + df_olayer.DISTANCE
+            # y_ovalues = np.repeat(df_olayer.CELL_Y.values, repeats=2)
+            x_ovalues = np.concatenate([df_olayer.CELL_X - df_olayer.DISTANCE, df_olayer.CELL_X + df_olayer.DISTANCE])
+            y_ovalues = np.tile(df_olayer.CELL_Y.values, 2)
+            layers = np.abs(layer - np.tile(df_olayer.LAYER.values, 2).astype(int))
+            offsets = np.array([0, 45, 70, 95])
+            matx = (x_values.reshape(-1, 1) - x_ovalues.reshape(1, -1))
+            maty = y_values.reshape(-1, 1) - y_ovalues.reshape(1, -1)
+            mat = np.sqrt(matx ** 2 + maty ** 2) < offsets[layers]
+
+            a = 1
+            # best_res = 0
+            # best_cells = []
+            # for cell in df[df.LAYER == layer].CELL:
+            #     res = count_hits_in_cone(cell, layer, df[df.LAYER != layer].CELL)
+            #     if res == best_res:
+            #         best_cells.append(cell)
+            #     elif res > best_res:
+            #         best_res = res
+            #         best_cells = [cell]
+            # if debug:
+            #     print(f"Con il metodo del cono ho scelto la celle {best_cells}")
+            #
+            # best_res = 0
+            # best_cells = []
+            # for cell in df[df.LAYER == layer].CELL:
+            #     res = count_continuous_piece(cell, df[df.LAYER != layer].CELL)
+            #     if res == best_res:
+            #         best_cells.append(cell)
+            #     elif res > best_res:
+            #         best_res = res
+            #         best_cells = [cell]
+            # if debug:
+            #     print(f"Con il metodo del blocco ho scelto le celle {best_cells}")
+
+
+def pattern_recognition(df, debug_info):
+    info = []
+    while len(df) >= MIN_PR_HIT:
+        lr, res = simple_fit(df.CELL_X, df.CELL_Y, minimize_vertical=False, res_method="y")
+        res2 = get_residuals_eucl_squared(df.CELL_Y, df.CELL_X, lr.slope, lr.intercept)
+        if np.max(res) > (CELL_WIDTH * 0.75) ** 2:
+            rm_index = res.idxmax()
+            cell = df.loc[rm_index].CELL
+            if debug_info:
+                info.append((lr, [res, res2], df, cell))
+                if debug_info:
+                    print(f"Ho rimosso la cella {cell}")
+            df = df.drop(rm_index)
+        else:
+            if debug_info:
+                info.append((lr, [res, res2], df, None))
+                return df, info
+            return df
+    if debug_info:
+        return None, info
+    else:
+        return None
+
+
+def count_continuous_piece(cell, other_cells):
+    layer_map = [[0, np.array([4, 2, -2, -4])],
+                 [2, np.array([0, 4, 6, 5, 1, -2])],
+                 [1, np.array([2, 5, 3, -2, -3, -1])],
+                 [3, np.array([1, 5, 7, -1])]]
+    layer = get_layers(cell)
+    offset, data = layer_map[layer]
+    data = set(data + (cell - offset))
+
+    scanned = []
+    while True:
+        to_scan = [c for c in other_cells if c in data and c not in scanned]
+        if not to_scan:
+            break
+        for c in to_scan:
+            l = get_layers(c)
+            offset_, data_ = layer_map[l]
+            data_ = set(data_ + (c - offset_))
+            data.update(data_)
+            scanned.append(c)
+
+    return np.sum([1 for c in other_cells if c in data])
+
+
+# Sceglie il gruppo 'migliore', codice brutto
+def get_index_good_group(groups):
+    lenghts = np.array([np.arange(len(groups)),
+                        [len(a) for a in groups]]).T
+    if 4 in lenghts:
+        return lenghts[lenghts[:, 1] == 4][0][0]
+
+    lenghts = lenghts[(lenghts[:, 1] <= 5) & (lenghts[:, 1] >= 3)]
+    if len(lenghts) > 0:
+        lenghts = lenghts[lenghts[:, 1].argsort()[::-1]]
+        return lenghts[0, 0]
 
 
 # Here we want to construct the track for a chamber only (the local track)
 def calculate_local_track(df):
-    count = 0
-    chs = 0
     PLOT = False
 
+    if PLOT:
+        plot_interactive2()
     orbit_groupby = df.groupby("ORBIT")
 
     # The tracks parameters are saved in a matrix with 6 columns (orbit, chamber, slope1, intercept1,
     # slope2, intercept2) what those are, is specified below
     tracks = np.zeros(shape=(len(orbit_groupby) * 3, 6))
+    counter = 0
     for orbit, df_orbit in orbit_groupby:
         # for every orbit we group by chamber
         for ch, df_ch in df_orbit.groupby("CHAMBER"):
-            # We calculate the tracks if there are only 4 hits in the chambers, this is just temporary,
-            # done just because it was easier to consider the easiest case
-            if len(df_ch) != 4:
+            # if orbit != 666316 or ch != 0:
+            #     continue
+
+            if len(df_ch) >= 8:
                 continue
+
+            groups = group_hits(df_ch)
+            df_ch_index = get_index_good_group(groups)
+
+            # discard_obvious_points(df_ch)
+            # solve_layer_ambiguity(df_ch)
+
+            if PLOT:
+                plot_grouping_result(ch, groups, df_ch_index)
+                graphic.wait_for_event()
+
+            if df_ch_index is None:
+                continue
+
+            df_ch = groups[df_ch_index]
+
+            # df_ch, pr_info = pattern_recognition(df_ch, debug_info=True)
+            # if PLOT:
+            #     plot_pattern_recognition_steps(pr_steps=pr_info)
 
             # x1 are the distances on the left side, x2 on the right side
             x1 = (df_ch.CELL_X - df_ch.DISTANCE).values
@@ -187,7 +377,7 @@ def calculate_local_track(df):
             comb_silver = bf_lr_sorted[1][1]
 
             # we save the result in the tracks-matrix of the best line
-            tracks[chs, 0:4] = [orbit, ch, res_bf.slope, res_bf.intercept]
+            tracks[counter, 0:4] = [orbit, ch, res_bf.slope, res_bf.intercept]
             # and we add in the hits-dataframe a column with the real distance of the hits we found
             # that means that if we found right-right-left-left we get the center distance of the cell
             # and we add-add-sub-sub the distance found from the drift time
@@ -196,14 +386,11 @@ def calculate_local_track(df):
 
             # if we have the second best line (it should be always the case) we add its info
             if slope_silver is not None:
-                tracks[chs, 4:] = [slope_silver, inter_silver]
+                tracks[counter, 4:] = [slope_silver, inter_silver]
                 df.loc[df_ch.index, "HIT_X2"] = np.where(comb_silver == 0, x1, x2)
 
-            chs += 1
-            # if np.all(comb1 == comb_bf):
-            #     count += 1
+            counter += 1
 
-            # just to plot the event
             if PLOT:
                 regr_data = [[], [], [], []]
                 regr_data[ch].append([res_bf.slope, res_bf.intercept])
@@ -216,18 +403,21 @@ def calculate_local_track(df):
                 plot_event(df_ch.CHAMBER, df_ch.CELL, df_ch.DISTANCE, regr_data=regr_data, focus_chamber=ch)
                 graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
                 plt.legend()
-                plt.waitforbuttonpress()
+                graphic.wait_for_event()
 
-    # print(count, chs, count / chs)
     # we convert the numpy tracks-matrix to a tracks-dataframe
+    tracks = tracks[~np.all(tracks == 0, axis=1)]
     tracks = pd.DataFrame(data=tracks[tracks[:, 0] != 0],
                           columns=["ORBIT", "CHAMBER", "SLOPE", "INTERCEPT", "SLOPE2", "INTERCEPT2"])
-    # and return both
     return df, tracks
 
 
 # Here we try to combine the local track to form a global track
 def calculate_global_track(df, tracks):
+    PLOT = False
+    if PLOT:
+        plot_interactive2(landscape=False)
+
     # array that will contain the difference in degrees of the global track vs the local track
     # of each chamber
     diff_angles = [[], [], [], []]
@@ -243,19 +433,21 @@ def calculate_global_track(df, tracks):
         # chambers is just a list of the chambers with hits in this event
         chambers = df_track.CHAMBER.unique().astype(int)
 
-        # we construct the data for the function just below
-        hits_x_list = []
-        hits_y_list = []
-        for ch in [0, 2, 3]:
-            ch_hits = df_orbit[df_orbit.CHAMBER == ch]
-            if len(ch_hits) > 0 and not np.any(np.isnan(ch_hits.HIT_X)):
-                hits_x_list.append((ch_hits.HIT_X, ch_hits.HIT_X2))
-                hits_y_list.append(ch_hits.CELL_Y)
+        # forse toglierli ancora prima, all'inizio o nel local track
+        df_orbit = df_orbit[~np.isnan(df_orbit.HIT_X)]
+        ch_counts = df_orbit.CHAMBER.value_counts()
+        xmat = np.full(shape=(len(ch_counts), 2, max(ch_counts)), fill_value=np.nan)
+        ymat = np.full(shape=(len(ch_counts), max(ch_counts)), fill_value=np.nan)
+        for i, (ch, n) in enumerate(ch_counts.sort_index().items()):
+            df_hits = df_orbit[df_orbit.CHAMBER == ch]
+            xmat[i, 0, :n] = df_hits.HIT_X
+            xmat[i, 1, :n] = df_hits.HIT_X2
+            ymat[i, :n] = df_hits.CELL_Y
 
         # We have two lines for each chamber (the best and the 2-nd best), we try to find the best possible line
         # using a set of points for each chamber (so we try all the combinations of best and 2nd-best to
         # get the global track)
-        result_list = fitter.fit_chambers_by_bruteforce(*hits_x_list, ys=hits_y_list)
+        result_list = fitter.fit_chambers_by_bruteforce(xmat, ymat)
 
         slopes = np.zeros(4)
         intercepts = np.zeros(4)
@@ -274,28 +466,23 @@ def calculate_global_track(df, tracks):
         for i, ch in enumerate(chambers):
             diff_angles[ch].append(angle - angles[ch])
 
-        # slope_diff = np.abs(slopes[0] - slopes[1])
-        # same_dir = (slopes[0] * slopes[1]) > 0
-        # delta_x = (df_orbit.CELL_Y - intercepts[0]) / slopes[0] - df_orbit.HIT_X
+        if PLOT:
+            regr_data = [[], [], [], []]
+            slopes2, intercepts2 = np.zeros(4), np.zeros(4)
+            slopes2[chambers] = df_track.SLOPE2.values
+            intercepts2[chambers] = df_track.INTERCEPT2.values
+            for i in [0, 2, 3]:
+                regr_data[i].append([slopes[i], intercepts[i]])
+                regr_data[i].append([slopes2[i], intercepts2[i]])
+            # regr_data[ch].append([res_bf.slope, res_bf.intercept])
 
-        # if same_dir:
-        #     continue
-
-        # plot_event(df_orbit.CHAMBER, df_orbit.CELL, df_orbit.DISTANCE)
-        # x_range = np.linspace(-10, 700, 50)
-        # for i, (res_lr, comb, sres, res) in enumerate(result_list):
-        #     original = np.all(comb == 0)
-        #     if i >= 1 and not original:
-        #         continue
-        #     label = "Original" if original else str(comb)
-        #     graphic._axes.plot(x_range, x_range * res_lr.slope + res_lr.intercept, label=f"{i} " + label)
-        # for slope_i, intercept_i in zip(slopes, intercepts):
-        #     graphic._axes.plot(x_range, x_range * slope_i + intercept_i, label=f"{i} ", ls="dashed")
-        # graphic._axes.set_title(f"Orbit: {orbit}")
-        # plt.legend()
-        #
-        # while not plt.waitforbuttonpress():
-        #     pass
+            plot_event(df_orbit.CHAMBER, df_orbit.CELL, df_orbit.DISTANCE, regr_data=regr_data, landscape=False)
+            x_range = np.linspace(-50, 2500, 50)
+            graphic._axes.plot(x_range, x_range / slope - intercept/slope, ls="dotted", lw=1)
+            # graphic._axes.plot(x_range, x_range * slope + intercept)
+            graphic._axes.set_title(f"Orbit: {orbit}, ch: {ch}", y=1.0, pad=-14)
+            plt.legend()
+            graphic.wait_for_event()
 
     # now outside the cycle, we plot the histograms of the differences
     MAX_ANGLE = 15
@@ -329,7 +516,8 @@ def set_pickled(path, obj):
 def main():
     filenames = ["../dataset/data_000000.dat", "../dataset/data_000001.dat", "../dataset/data_000002.dat",
                  "../dataset/data_000003.dat", "../dataset/data_000004.dat", "../dataset/data_000005.dat"]
-
+    # filenames = ["../dataset/data_000000.dat"]
+    #
     # We join the dataset (after filtering one by one (we don't want a gigantc raw df))
     big_df_filtered = None
     for filename in filenames:
@@ -346,15 +534,20 @@ def main():
 
         print("--------------------------------------")
 
+    print("Dataframe loaded")
+    # set_pickled("./pickled/big_things.bin", big_df_filtered)
+    # big_df_filtered = get_pickled("./pickled/big_things.bin")
     big_df_filtered, tracks = calculate_local_track(big_df_filtered)
+    print("Local tracks calculated")
     # We save the result so we can use get_pickled to avoid doing all the calculation at every startup
     # for developing-purpouse only
-    set_pickled("./pickled/big_things.bin", [big_df_filtered, tracks])
+    # set_pickled("./pickled/big_things.bin", [big_df_filtered, tracks])
 
     # if you are working only on the global_tracks and want to avoid calculating all the time the local
     # tracks, you can comment all the code above and just run these two lines
-    big_df_filtered, tracks = get_pickled("./pickled/big_things.bin")
+    # big_df_filtered, tracks = get_pickled("./pickled/big_things.bin")
     calculate_global_track(big_df_filtered, tracks)
+    print("Global tracks calculated")
 
     ### OLD STUFFS ###
 

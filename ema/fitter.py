@@ -16,6 +16,24 @@ def get_residuals_eucl_squared(x, y, slope, intercept):
     return ((slope * x - y + intercept) / np.sqrt(slope ** 2 + 1)) ** 2
 
 
+def simple_fit(x, y, minimize_vertical=True, res_method=None):
+    if not minimize_vertical:
+        x, y = y, x
+
+    res = stats.linregress(x, y)
+    res_method = res_method or "xy"
+
+    if res_method == "xy":
+        residuals = get_residuals_eucl_squared(x, y, res.slope, res.intercept)
+    elif res_method == "y":
+        residuals = get_yresiduals_squared(x, y, res.slope, res.intercept)
+    elif res_method == "x":
+        residuals = get_xresiduals_squared(x, y, res.slope, res.intercept)
+    else:
+        raise ValueError(f"Invalid residual method: {res_method}, allowed: x, y, xy")
+    return res, residuals
+
+
 # def fit_by_peer_dist(x1, x2, x, y, debug=False, only_x=False):
 #     stack = np.column_stack([x, y])
 #     stack1 = np.column_stack([x1, y])
@@ -136,21 +154,36 @@ def fit_by_bruteforce(x1, x2, x, y, hint=None, res_method="xy", debug=False, blo
 # fit_chambers_by_bruteforce(x1s, x2s, x3s, ys=ys)
 # la funzione per ogni x[i]s troverà quale delle due coppie di 4 numeri è migliore per il fit globale,
 # le y non cambiano tra le due combinazioni
-def fit_chambers_by_bruteforce(*xs, ys):
-    combs = np.array(list(itertools.product(np.arange(len(xs[0])), repeat=len(xs))))
-    xs = np.array(xs)
+def fit_chambers_by_bruteforce(xmat, ymat):
+    combs = np.array(list(itertools.product(np.arange(xmat.shape[1]), repeat=xmat.shape[0])))
 
     res_list = []
-    y_data = np.array(ys).reshape(-1)
+    y_data = ymat[~np.isnan(ymat)].reshape(-1)
     for i, comb in enumerate(combs):
         # x_data = np.concatenate((x1s[comb[0]], x2s[comb[1]]))
-        x_data = xs[np.arange(xs.shape[0]), comb, :].reshape(-1)
+        x_data = xmat[np.arange(xmat.shape[0]), comb, :].reshape(-1)
+        x_data = x_data[~np.isnan(x_data)]
         res = stats.linregress(x_data, y_data)
         residuals = get_residuals_eucl_squared(x_data, y_data, res.slope, res.intercept)
         res_list.append((res, comb, np.sum(residuals), residuals))
 
     res_list.sort(key=lambda x: x[2])
     return res_list
+# def fit_chambers_by_bruteforce(*xs, ys):
+#     combs = np.array(list(itertools.product(np.arange(len(xs[0])), repeat=len(xs))))
+#     xs = np.array(xs)
+#
+#     res_list = []
+#     y_data = np.array(ys).reshape(-1)
+#     for i, comb in enumerate(combs):
+#         # x_data = np.concatenate((x1s[comb[0]], x2s[comb[1]]))
+#         x_data = xs[np.arange(xs.shape[0]), comb, :].reshape(-1)
+#         res = stats.linregress(x_data, y_data)
+#         residuals = get_residuals_eucl_squared(x_data, y_data, res.slope, res.intercept)
+#         res_list.append((res, comb, np.sum(residuals), residuals))
+#
+#     res_list.sort(key=lambda x: x[2])
+#     return res_list
 
 
 if __name__ == "__main__":

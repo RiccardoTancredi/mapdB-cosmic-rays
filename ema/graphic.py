@@ -1,16 +1,24 @@
 import pandas as pd
+from matplotlib import _blocking_input
 from matplotlib.widgets import Button
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle, Circle
+from matplotlib.text import Text
 
 _initialized = False
 _rects = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _points = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _mpoints_lf = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _mpoints_rg = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
+_cell_numbers = [[None] * 64, [None] * 64, [None] * 64, [None] * 64]
 _figure = None
 _axes = None
+_text = None
+_consuming_axes = []
+_allowed_axes = []
+
+_FACECOLOR = "lightseagreen"
 
 _DPI = 128
 _FIG_SIZE_LS = (12, 8)
@@ -61,7 +69,7 @@ def _create_rectangles(landscape=True):
 
                 edgecolor = "deeppink" if (index == 0) else "black"
                 rect = Rectangle((x, y), width=cw, height=ch,
-                                 edgecolor=edgecolor, fill=False, facecolor="lightseagreen")
+                                 edgecolor=edgecolor, fill=False, facecolor=_FACECOLOR)
 
                 point = Circle((xp, yp), radius=1, color="red", zorder=100)
 
@@ -73,6 +81,9 @@ def _create_rectangles(landscape=True):
                 _mpoints_lf[cham][index] = point_lf
                 _mpoints_rg[cham][index] = point_rg
 
+                if landscape:
+                    _cell_numbers[cham][index] = (xp - _HALF_CW, yp - _HALF_CH + 1, index)
+
 
 def _get_chambers_y_limits(chamber=None, landscape=True):
     if chamber is None:
@@ -80,12 +91,12 @@ def _get_chambers_y_limits(chamber=None, landscape=True):
 
     min_y = _OFFSETS[chamber]
     max_y = _OFFSETS[chamber] + CELL_HEIGHT * 4
-    more = 100 if landscape else 100
+    more = 75 if landscape else 75
 
     return min_y - CELL_HEIGHT * 2 - more, max_y + CELL_HEIGHT * 2 + more
 
 
-def _get_chambers_x_limits(chamber=None):
+def _get_chambers_x_limits(chamber=None, landscape=True):
     return -10, 750
 
 
@@ -126,6 +137,9 @@ def create_canvas(chamber=None, landscape=True):
         _axes.set_xlim(_get_chambers_y_limits(chamber, landscape=False))
         _axes.set_ylim(_get_chambers_x_limits(chamber))
 
+    global _text
+    _text = _axes.text(0, 0, s="")
+
     for cham in [0, 2, 3]:
         x = _get_chambers_x_limits(cham)[1] - 40
         y = _get_chambers_y_limits(cham)[0] + CELL_HEIGHT * 2
@@ -141,6 +155,9 @@ def create_canvas(chamber=None, landscape=True):
                 _axes.add_patch(_points[i][j])
                 _axes.add_patch(_mpoints_lf[i][j])
                 _axes.add_patch(_mpoints_rg[i][j])
+                if landscape:
+                    xt, yt, txt = _cell_numbers[i][j]
+                    _axes.text(x=xt, y=yt, s=txt, size=5)
     # plt.tight_layout()
     plt.tight_layout(pad=1.5)
 
@@ -153,11 +170,11 @@ def _reset_cells():
     for i in range(len(_rects)):
         for j in range(len(_rects[i])):
             if _rects[i][j]:
-                _rects[i][j].set(fill=False)
+                _rects[i][j].set(fill=False, facecolor=_FACECOLOR)
                 _mpoints_lf[i][j].set(visible=False)
                 _mpoints_rg[i][j].set(visible=False)
 
-    if len(_axes.lines) > 0:
+    if _axes.get_legend():
         _axes.get_legend().remove()
         _axes.set_prop_cycle(None)
 
@@ -165,17 +182,30 @@ def _reset_cells():
         line.remove()
 
 
-def _draw_event(chambers, cells, distances=None, regr_data=None, landscape=True):
-    _reset_cells()
+def _draw_event(chambers, cells, distances=None, regr_data=None, landscape=True, reset_canvas=True, facecolor=None):
+    if reset_canvas:
+        _reset_cells()
+
+    kwargs = {}
+    if facecolor is not None:
+        kwargs["facecolor"] = facecolor
 
     for cham, cell in zip(chambers, cells):
-        _rects[cham][cell].set(fill=True)
+        _rects[cham][cell].set(fill=True, **kwargs)
 
     if regr_data is not None:
+        colors = ["blue", "green", "orange", "red"]
         for cham in [0, 2, 3]:
-            x_range = np.linspace(*_get_chambers_x_limits(cham), 50)
+            if landscape:
+                x_range = np.linspace(*_get_chambers_x_limits(cham), 50)
+            else:
+                x_range = np.linspace(*_get_chambers_y_limits(cham), 50)
+
             for i, (slope, intercept) in enumerate(regr_data[cham]):
-                _axes.plot(x_range, x_range * slope + intercept, label=i)
+                if landscape:
+                    _axes.plot(x_range, x_range * slope + intercept, label=i, color=colors[i])
+                else:
+                    _axes.plot(x_range, x_range * 1 / slope - intercept / slope, label=i, color=colors[i])
 
     if len(_axes.lines) > 0:
         _axes.legend()
@@ -192,9 +222,75 @@ def _draw_event(chambers, cells, distances=None, regr_data=None, landscape=True)
                 _mpoints_rg[cham][cell].set(center=(cx, cy + dist), visible=True)
 
 
-def plot_event(chambers, cells, distances=None, regr_data=None, focus_chamber=None, landscape=True):
+def write_text(text, x=None, y=None, center=None):
+    if center:
+        xlim = _axes.get_xlim()
+        ylim = _axes.get_ylim()
+        x = xlim[0] + (xlim[1] - xlim[0]) * 0.5 - len(text) * 3
+        y = ylim[0] + (ylim[1] - ylim[0]) * 0.8
+        # print(xlim, ylim)
+
+    kwargs = {}
+    if x is not None:
+        kwargs["x"] = x
+    if y is not None:
+        kwargs["y"] = y
+    _text.set(text=text, **kwargs)
+
+
+def clear_text():
+    write_text(text="")
+
+
+# def _add_control_buttons():
+#     if True:
+#         axnext = _figure.add_axes([0.8, 0.75, 0.1, 0.075])
+#
+#     bnext = Button(axnext, 'Next')
+#     bnext.on_clicked(lambda x: True)
+#
+#     _s.extend([bnext])
+#     _consuming_axes.append(axnext)
+#     # fig.axes
+
+
+def plot_pattern_recognition_steps(pr_steps, landscape=True):
+    chamber = None
+    for lr, res, df, cell in pr_steps:
+        print(list(df.CELL))
+        for r in res:
+            print(list(np.round(np.sqrt(r), 2)))
+        chamber = int(df.CHAMBER.iloc[0])
+        plot_event(df.CHAMBER, df.CELL, df.DISTANCE, focus_chamber=chamber, landscape=landscape)
+        x = np.linspace(-10, 2500, 40)
+        y = lr.slope * np.linspace(-10, 2500, 40) + lr.intercept
+        _axes.plot(y, x)
+
+        if cell:
+            _rects[chamber][int(cell)].set(facecolor="lightcoral", fill=True)
+        wait_for_event()
+
+
+def plot_grouping_result(chamber, groups, index_good, text=None):
+    if index_good is not None:
+        plot_event(groups[index_good].CHAMBER, groups[index_good].CELL, groups[index_good].DISTANCE,
+                   focus_chamber=chamber)
+    else:
+        plot_event([], [], None, focus_chamber=chamber)
+
+    colors = ["gold", "violet", "royalblue", "coral", "silver", "bisque"]
+    for i, group in enumerate(groups):
+        if i == index_good:
+            continue
+        plot_event(group.CHAMBER, group.CELL, group.DISTANCE, focus_chamber=chamber, reset_canvas=False,
+                   facecolor=colors[i])
+
+
+def plot_event(chambers, cells, distances=None, regr_data=None, focus_chamber=None, landscape=True, facecolor=None,
+               reset_canvas=True):
     create_canvas(landscape=landscape)
-    _draw_event(chambers, cells, distances, regr_data, landscape=landscape)
+    _draw_event(chambers, cells, distances, regr_data, landscape=landscape, reset_canvas=reset_canvas,
+                facecolor=facecolor)
 
     if focus_chamber is not None:
         _set_canvas(focus_chamber, landscape=landscape)
@@ -258,6 +354,67 @@ _s = []
 # def plot_simple_interactive(chambers, cells, distances=None, landscape=True):
 #     df = pd.DataFrame(data=[chambers, cells, distances], columns=["CHAMBER", "CELL", "DISTANCE"])
 #     plot_interactive([df], landscape=landscape)
+
+def wait_for_event():
+    event = None
+
+    def handler(ev):
+        nonlocal event
+        event = ev
+        for ax in _allowed_axes:
+            if ax == ev.inaxes:
+                _figure.canvas.stop_event_loop()
+                return
+
+    _blocking_input.blocking_input_loop(
+        _figure, ["button_press_event", "key_press_event"], -1, handler)
+
+    return None if event is None else event.name == "key_press_event"
+
+
+def plot_interactive2(landscape=True):
+    create_canvas(landscape=landscape)
+
+    def ch0(event):
+        _set_canvas(0, landscape)
+        plt.draw()
+
+    def ch2(event):
+        _set_canvas(2, landscape)
+        plt.draw()
+
+    def ch3(event):
+        _set_canvas(3, landscape)
+        plt.draw()
+
+    def reset_ch(event):
+        _set_canvas(None, landscape)
+        plt.draw()
+
+    def next_(event):
+        pass
+
+    axnext = _figure.add_axes([0.8, 0.75, 0.1, 0.075])
+    axch0 = _figure.add_axes([0.1, 0.85, 0.1, 0.075])
+    axch2 = _figure.add_axes([0.2, 0.85, 0.1, 0.075])
+    axch3 = _figure.add_axes([0.1, 0.75, 0.1, 0.075])
+    axchreset = _figure.add_axes([0.2, 0.75, 0.1, 0.075])
+
+    bnext = Button(axnext, 'Next')
+    bnext.on_clicked(next_)
+
+    bch0 = Button(axch0, 'CH 0')
+    bch0.on_clicked(ch0)
+    bch2 = Button(axch2, 'CH 2')
+    bch2.on_clicked(ch2)
+    bch3 = Button(axch3, 'CH 3')
+    bch3.on_clicked(ch3)
+    bchreset = Button(axchreset, 'CH Reset')
+    bchreset.on_clicked(reset_ch)
+
+    _s.extend([bnext, bch0, bch2, bch3, bchreset])
+    _consuming_axes.extend([axch0, axch2, axch3, axchreset])
+    _allowed_axes.append(axnext)
 
 
 # dfs: list of dataframes
@@ -368,6 +525,7 @@ def plot_interactive(dfs, landscape=True, add_info=None, regr_data=None):
     bchreset.on_clicked(reset_ch)
 
     _s.extend([bnext, bprev, bautogo, bchnext, bchprev, bchreset])
+    # _consuming_axes.extend([axnext, axprev])
 
 
 if __name__ == "__main__":
