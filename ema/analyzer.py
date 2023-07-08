@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from ema import graphic, fitter
-from ema.fitter import simple_fit, get_residuals_eucl_squared
-from ema.graphic import plot_interactive, plot_event, plot_pattern_recognition_steps, plot_grouping_result, write_text, \
+import graphic, fitter
+from fitter import simple_fit, get_residuals_eucl_squared
+from graphic import plot_interactive, plot_event, plot_pattern_recognition_steps, plot_grouping_result, write_text, \
     plot_interactive2
 from loader import numpy_loading
 import matplotlib.pyplot as plt
@@ -420,9 +420,10 @@ def calculate_global_track(df, tracks):
 
     # array that will contain the difference in degrees of the global track vs the local track
     # of each chamber
-    diff_angles = [[], [], [], []]
+    columns_names = ['G_SLOPE', 'G_INTERCEPT', 'CHAMBER0', 'CHAMBER1', 'CHAMBER2', 'CHAMBER3']
+    diff_angles = np.full(shape=(tracks.shape[0], len(columns_names)), fill_value=np.nan)
     # So, for each orbit
-    for orbit, df_orbit in df.groupby("ORBIT"):
+    for index, (orbit, df_orbit) in enumerate(df.groupby("ORBIT")):
 
         # we get the tracks associated with this orbit from the tracks-dataframe
         df_track = tracks[tracks.ORBIT == orbit]
@@ -463,8 +464,10 @@ def calculate_global_track(df, tracks):
         # we convert the global slope in angle
         angle = np.arctan(slope) * 180 / np.pi
         # and for each chamber we save the difference
-        for i, ch in enumerate(chambers):
-            diff_angles[ch].append(angle - angles[ch])
+        diff_angles[index, 0:2] = slope, intercept
+
+        for ch in chambers:
+            diff_angles[index, ch+2] = angle - angles[ch]
 
         if PLOT:
             regr_data = [[], [], [], []]
@@ -502,6 +505,7 @@ def calculate_global_track(df, tracks):
         plt.title(f"differences of ch {ch}, zoom from -{MAX_ANGLE}° to {MAX_ANGLE}°")
     plt.show()
 
+    return pd.DataFrame(data=diff_angles, columns=columns_names).dropna(how="all").drop('CHAMBER1', axis=1)
 
 def get_pickled(path):
     with open(path, "rb") as f:
@@ -514,8 +518,9 @@ def set_pickled(path, obj):
 
 
 def main():
-    filenames = ["../dataset/data_000000.dat", "../dataset/data_000001.dat", "../dataset/data_000002.dat",
-                 "../dataset/data_000003.dat", "../dataset/data_000004.dat", "../dataset/data_000005.dat"]
+    # filenames = ["../dataset/data_000000.dat", "../dataset/data_000001.dat", "../dataset/data_000002.dat",
+    #              "../dataset/data_000003.dat", "../dataset/data_000004.dat", "../dataset/data_000005.dat"]
+    filenames = ["./dataset/data_000001.dat", "./dataset/data_000002.dat"]
     # filenames = ["../dataset/data_000000.dat"]
     #
     # We join the dataset (after filtering one by one (we don't want a gigantc raw df))
@@ -538,16 +543,19 @@ def main():
     # set_pickled("./pickled/big_things.bin", big_df_filtered)
     # big_df_filtered = get_pickled("./pickled/big_things.bin")
     big_df_filtered, tracks = calculate_local_track(big_df_filtered)
-    print("Local tracks calculated")
     # We save the result so we can use get_pickled to avoid doing all the calculation at every startup
     # for developing-purpouse only
     # set_pickled("./pickled/big_things.bin", [big_df_filtered, tracks])
-
+    print(big_df_filtered)
+    print("\n")
+    print(tracks)
+    print("\n")
     # if you are working only on the global_tracks and want to avoid calculating all the time the local
     # tracks, you can comment all the code above and just run these two lines
     # big_df_filtered, tracks = get_pickled("./pickled/big_things.bin")
-    calculate_global_track(big_df_filtered, tracks)
+    res = calculate_global_track(big_df_filtered, tracks)
     print("Global tracks calculated")
+    print(res)
 
     ### OLD STUFFS ###
 
